@@ -134,10 +134,10 @@ int main() {
     cout << "    " << "Coins after investment: " << baron.coins() << " (paid 3, received 6, +3 in total)" << endl;
     cout << endl;
 
-    // General gathers
+    // General taxes
     cout << "11. " << general.getName() << " gathers" << endl;
     cout << "    " << "Coins before: " << general.coins() << endl;
-    general.gather();
+    general.tax();
     cout << "    " << "Coins after: " << general.coins() << " (+1 coin)" << endl;
     cout << endl;
 
