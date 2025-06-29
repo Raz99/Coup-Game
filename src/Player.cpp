@@ -51,7 +51,7 @@ namespace coup {
             return *this;
         }
         
-        // I don't copy the game reference or name to maintain identity
+        game = other.game;
         coin_count = other.coin_count;
         active = other.active;
         sanctioned = other.sanctioned;
@@ -268,13 +268,21 @@ namespace coup {
         }
 
         if (target.coins() >= 1) { // Only proceed if target has coins to lose
-            if(target.getRoleType() != "General") { // Standard arrest - transfer coin
-                target.removeCoins(1); // Take 1 coin from target
-                addCoins(1); // Give coin to arresting player
+            // Merchant special ability - pays treasury
+            if(target.getRoleType() == "Merchant") {
+                if(target.coins() >= 2) {
+                    target.removeCoins(2); // Merchant loses 2 coins to treasury instead
+                }
+
+                else {
+                    target.removeCoins(1); // Merchant loses what they have
+                }
             }
 
-            else if(target.getRoleType() == "Merchant") { // Merchant special ability - pays treasury
-                target.removeCoins(2); // Merchant loses 2 coins to treasury instead
+            // Standard arrest - transfer coin
+            else if(target.getRoleType() != "General") {
+                target.removeCoins(1); // Take 1 coin from target
+                addCoins(1); // Give coin to arresting player
             }
         }
         
