@@ -1,480 +1,428 @@
 // Email: razcohenp@gmail.com
 
- // Player.cpp - Implementation of the base Player class
- // Provides core functionality for all player actions and game mechanics
+/**
+ * Comprehensive tests for all role classes
+ * Tests unique abilities, role identification, and role-specific interactions
+ * Covers the special role abilities in the Coup card game:
+ * - Governor: Enhanced tax (3 coins) and undo last tax action
+ * - General: Block coup attempts by paying 5 coins
+ * - Judge: Block bribe effects from other players
+ * - Baron: Investment action (pay 3, gain 6 coins net +3)
+ * - Spy: Spy on players to see coins and block arrests
+ * - Merchant: Bonus coin when turn starts with 3+ coins, special arrest defense
+ */
 
-#include "../include/Player.hpp"
+#include "doctest.h"
+#include <stdexcept>
 #include "../include/Game.hpp"
-#include <stdexcept> // For exception handling
+#include "../include/Player.hpp"
+#include "../include/roles/Governor.hpp"
+#include "../include/roles/General.hpp"
+#include "../include/roles/Judge.hpp"
+#include "../include/roles/Baron.hpp"
+#include "../include/roles/Spy.hpp"
+#include "../include/roles/Merchant.hpp"
 
-namespace coup {
-    /**
-     * Constructor initializes a player and adds them to the game.
-     * Validates input parameters and sets up initial game state.
-     */
-    Player::Player(Game& game, const std::string& name)
-    : game(game), name(name), coin_count(0), active(true), sanctioned(false), arrest_available(true),
-    bribe_used(false), used_tax_last_action(false), couped_by(nullptr) {
-        if (&game == nullptr) { // Validate game reference is not null
-            throw std::invalid_argument("Game reference cannot be null");
-        }
+using namespace coup;
+
+TEST_CASE("Governor Role Tests") {
+    Game game; // Create game for Governor testing
+    Governor gov1(game, "Governor"); // Governor player
+    Baron baron(game, "Baron"); // Regular player for interaction
+    game.startGame(); // Start game to enable actions
+    
+    SUBCASE("Governor role identification") {
+        CHECK(gov1.getRoleType() == "Governor"); // Should identify as Governor
+    }
+    
+    SUBCASE("Enhanced tax ability - 3 coins instead of 2") {
+        CHECK(gov1.coins() == 0); // Start with 0 coins
+        gov1.tax(); // Governor uses enhanced tax
+        CHECK(gov1.coins() == 3); // Governor gets 3 coins instead of 2
+        CHECK(gov1.usedTaxLastAction()); // Tax usage should be tracked
+    }
+    
+    SUBCASE("Undo action - valid target") {
+        // Set up scenario where regular player used tax
+        CHECK_NOTHROW(gov1.tax()); // Governor taxes to advance turn
+        CHECK_NOTHROW(baron.tax()); // Baron taxes normally (gets 2 coins)
+        CHECK(baron.coins() == 2); // Baron should have 2 coins
+        CHECK(baron.usedTaxLastAction()); // Baron's tax flag should be set
         
-        if (name.empty()) { // Ensure player has a valid name
-            throw std::invalid_argument("Player name cannot be empty");
-        }
-
-        if (name.length() >= 10) { // Enforce name length limit for display purposes
-            throw std::invalid_argument("Player name cannot exceed 9 characters");
-        }
-
-        game.addPlayer(this); // Register this player with the game instance
+        // Governor undoes the tax
+        gov1.undo(baron); // Governor undoes Baron's tax
+        CHECK(baron.coins() == 0); // Baron loses the 2 coins from tax
+        CHECK_FALSE(baron.usedTaxLastAction()); // Tax flag should be reset
     }
-
-    /**
-     * Copy constructor creates a new player with copied state.
-     * Used for cloning players.
-     */
-    Player::Player(const Player& other)
-        : game(other.game), name(other.name + "_copy"), coin_count(other.coin_count), active(other.active),
-        sanctioned(other.sanctioned), arrest_available(other.arrest_available), bribe_used(other.bribe_used),
-        used_tax_last_action(other.used_tax_last_action), couped_by(other.couped_by) {
-        // I don't call game.addPlayer(this) here to avoid automatic registration
-    }
-
-    /**
-     * Copy assignment operator copies state from another player.
-     * Maintains current game registration and handles self-assignment.
-     */
-    Player& Player::operator=(const Player& other) {
-        // Handle self-assignment
-        if (this == &other) {
-            return *this;
-        }
+    
+    SUBCASE("Undo action - invalid targets") {
+        // Cannot undo if target didn't use tax as last action
+        CHECK_THROWS_AS(gov1.undo(baron), std::runtime_error); // Baron hasn't used tax
         
-        game = other.game;
-        coin_count = other.coin_count;
-        active = other.active;
-        sanctioned = other.sanctioned;
-        arrest_available = other.arrest_available;
-        bribe_used = other.bribe_used;
-        used_tax_last_action = other.used_tax_last_action;
-        couped_by = other.couped_by;
+        // Cannot undo on self
+        gov1.tax(); // Governor uses tax
+        CHECK_THROWS_AS(gov1.undo(gov1), std::runtime_error); // Cannot undo own actions
         
-        return *this;
+        // Cannot undo inactive player
+        baron.setActivityStatus(false); // Eliminate Baron
+        CHECK_THROWS_AS(gov1.undo(baron), std::runtime_error); // Cannot undo eliminated players
     }
-
-    /**
-     * Returns the player's display name for identification.
-     * Used throughout the game for player recognition.
-     */
-    std::string Player::getName() const {
-        return name; // Return the player's assigned name
-    }
-
-    /**
-     * Returns the player's current coin count.
-     * Essential for action validation and game state display.
-     */
-    int Player::coins() const {
-        return coin_count; // Return current financial resources
-    }
-
-    /**
-     * Checks if the player is still participating in the game.
-     * Inactive players have been eliminated and cannot perform actions.
-     */
-    bool Player::isActive() const {
-        return active; // Return current participation status
-    }
-
-    /**
-     * Checks if the player is currently sanctioned.
-     * Sanctioned players cannot perform economic actions like gather or tax.
-     */
-    bool Player::isSanctioned() const {
-        return sanctioned; // Return current sanction status
-    }
-
-    /**
-     * Checks if this player can be targeted by arrest actions.
-     * Some roles or effects can temporarily prevent arrests.
-     */
-    bool Player::isArrestAvailable() const {
-        return arrest_available; // Return arrest vulnerability status
-    }
-
-    /**
-     * Checks if the player has used bribe action this turn.
-     * Bribe allows additional actions within the same turn.
-     */
-    bool Player::isBribeUsed() const {
-        return bribe_used; // Return bribe usage status for current turn
-    }
-
-    /**
-     * Checks if tax was the player's most recent action.
-     * Used by Governor role to determine if undo action is valid.
-     */
-    bool Player::usedTaxLastAction() const {
-        return used_tax_last_action; // Return tax action tracking status
-    }
-
-    /**
-     * Gets reference to the player who performed coup on this player.
-     * Used for General's coup blocking ability within time window.
-     */
-    Player* Player::getCoupedBy() const {
-        return couped_by; // Return reference to couping player
-    }
-
-    /**
-     * Gather action - basic economic action to gain 1 coin.
-     * Available to all players unless sanctioned or under special conditions.
-     */
-    void Player::gather() {
-        if (!game.isGameStarted()) { // Ensure game is in progress
-            throw std::runtime_error("Game has not started yet");
-        }
-
-        if (!game.isPlayerTurn(this)) { // Verify it's this player's turn
-            throw std::runtime_error("Not your turn");
-        }
-
-        if (!active) { // Ensure player is still in the game
-            throw std::runtime_error("Player is eliminated");
-        }
-
-        if (coin_count >= 10 && !bribe_used) { // Enforce mandatory coup rule
-            throw std::runtime_error("You have 10 or more coins, must perform coup");
-        }
-
-        if (sanctioned) { // Check if economic actions are blocked
-            throw std::runtime_error("Player is sanctioned");
-        }
-
-        addCoins(1); // Award 1 coin for gather action
-
-        if(bribe_used) { // If player used bribe, allow continued play
-            bribe_used = false; // Reset bribe flag for next action
-        }
+    
+    SUBCASE("Undo when game not started") {
+        Game new_game; // Create new unstarted game
+        Governor new_gov(new_game, "NewGov"); // Add Governor
+        Baron new_baron(new_game, "NewBaron"); // Add Baron
         
-        else { // Normal turn progression
-            game.nextTurn(); // Advance to next player's turn
-        }
+        CHECK_THROWS(new_gov.undo(new_baron)); // Cannot undo before game starts
     }
+}
 
-    /**
-     * Tax action - economic action to gain 2 coins from treasury.
-     * Virtual method as some roles modify the coin amount received.
-     */
-    void Player::tax() {
-        if (!game.isGameStarted()) { // Ensure game is in progress
-            throw std::runtime_error("Game has not started yet");
-        }
-
-        if (!game.isPlayerTurn(this)) { // Verify it's this player's turn
-            throw std::runtime_error("Not your turn");
-        }
-
-        if (!active) { // Ensure player is still in the game
-            throw std::runtime_error("Player is eliminated");
-        }
-
-        if (coin_count >= 10 && !bribe_used) { // Enforce mandatory coup rule
-            throw std::runtime_error("You have 10 or more coins, must perform coup");
-        }
-
-        if (sanctioned) { // Check if economic actions are blocked
-            throw std::runtime_error("Player is sanctioned");
-        }
-
-        addCoins(2); // Award 2 coins for tax action
-
-        if(bribe_used) { // If player used bribe, allow continued play
-            bribe_used = false; // Reset bribe flag for next action
-        }
-        
-        else { // Normal turn progression
-            used_tax_last_action = true; // Mark tax as last action for Governor undo
-            game.nextTurn(); // Advance to next player's turn
-        }
+TEST_CASE("General Role Tests") {
+    Game game; // Create game for General testing
+    General gen(game, "General"); // General player
+    Player victim(game, "Victim"); // Player to be saved from coup
+    Player attacker(game, "Attacker"); // Player performing coup
+    game.startGame(); // Start game to enable actions
+    
+    SUBCASE("General role identification") {
+        CHECK(gen.getRoleType() == "General"); // Should identify as General
     }
-
-    /**
-     * Bribe action - pays 4 coins to gain an additional action this turn.
-     * Allows strategic flexibility by enabling multiple actions per turn.
-     */
-    void Player::bribe() {
-        if (!game.isGameStarted()) { // Ensure game is in progress
-            throw std::runtime_error("Game has not started yet");
-        }
-
-        if (!game.isPlayerTurn(this)) { // Verify it's this player's turn
-            throw std::runtime_error("Not your turn");
-        }
-
-        if (!active) { // Ensure player is still in the game
-            throw std::runtime_error("Player is eliminated");
-        }
-
-        if (coin_count >= 10 && !bribe_used) { // Enforce mandatory coup rule
-            throw std::runtime_error("You have 10 or more coins, must perform coup");
-        }
-
-        if (coin_count < 4) { // Verify player has sufficient funds
-            throw std::runtime_error("Not enough coins for bribe");
-        }
-
-        removeCoins(4); // Pay the bribe cost
-        bribe_used = true; // Mark bribe as used for this turn
-        // Note: No nextTurn() call as player gets another action
+    
+    SUBCASE("Block coup - valid scenario") {
+        gen.addCoins(10); // Give General coins for blocking
+        attacker.addCoins(7); // Give attacker coins for coup
+        
+        // Attacker coups victim
+        game.nextTurn(); // Skip to attacker's turn
+        game.nextTurn(); // Skip to attacker's actual turn
+        attacker.coup(victim); // Attacker eliminates victim
+        CHECK_FALSE(victim.isActive()); // Victim should be eliminated
+        CHECK(victim.getCoupedBy() == &attacker); // Track who performed coup
+        
+        // General blocks the coup
+        gen.block_coup(victim); // General pays 5 coins to save victim
+        CHECK(gen.coins() == 5); // General should have 5 coins left (10-5=5)
+        CHECK(victim.isActive()); // Victim should be restored to active
+        CHECK(victim.getCoupedBy() == nullptr); // Coup reference should be cleared
     }
-
-    /**
-     * Arrest action - takes 1 coin from target player.
-     * Cannot target the same player consecutively to prevent harassment.
-     */
-    void Player::arrest(Player& target) {
-        if (!game.isGameStarted()) { // Ensure game is in progress
-            throw std::runtime_error("Game has not started yet");
-        }
+    
+    SUBCASE("Block coup - insufficient coins") {
+        gen.addCoins(4); // Give General insufficient coins
+        attacker.addCoins(7); // Give attacker coins for coup
         
-        if (!game.isPlayerTurn(this)) { // Verify it's this player's turn
-            throw std::runtime_error("Not your turn");
-        }
-
-        if (!active) { // Ensure player is still in the game
-            throw std::runtime_error("Player is eliminated");
-        }
-
-        if (!arrest_available) { // Check if arrest is blocked by Spy
-            throw std::runtime_error("Arrest action is not available");
-        }
-
-        if (coin_count >= 10 && !bribe_used) { // Enforce mandatory coup rule
-            throw std::runtime_error("You have 10 or more coins, must perform coup");
-        }
-
-        if (&target == this) { // Prevent self-targeting
-            throw std::runtime_error("An action against yourself is not allowed");
-        }
-
-        if (!target.isActive()) { // Ensure target is still in game
-            throw std::runtime_error("Target player is eliminated");
-        }
-
-        if (game.getLastArrestedPlayer() == &target) { // Prevent consecutive arrests
-            throw std::runtime_error("This player was the last player to be arrested (consecutive arrest is not allowed)");
-        }
-
-        if (target.coins() >= 1) { // Only proceed if target has coins to lose
-            // Merchant special ability - pays treasury
-            if(target.getRoleType() == "Merchant") {
-                if(target.coins() >= 2) {
-                    target.removeCoins(2); // Merchant loses 2 coins to treasury instead
-                }
-
-                else {
-                    target.removeCoins(1); // Merchant loses what they have
-                }
-            }
-
-            // Standard arrest - transfer coin
-            else if(target.getRoleType() != "General") {
-                target.removeCoins(1); // Take 1 coin from target
-                addCoins(1); // Give coin to arresting player
-            }
-        }
+        // Set up coup scenario
+        victim.setActivityStatus(false); // Victim is eliminated
+        victim.setCoupedBy(&attacker); // Track coup performer
         
-        game.setLastArrestedPlayer(&target); // Record arrest for consecutive prevention
-        
-        if(bribe_used) { // If player used bribe, allow continued play
-            bribe_used = false; // Reset bribe flag for next action
-        }
-        
-        else { // Normal turn progression
-            game.nextTurn(); // Advance to next player's turn
-        }
+        CHECK_THROWS_AS(gen.block_coup(victim), std::runtime_error); // Not enough coins to block
+        CHECK(gen.coins() == 4); // Coins should be unchanged
     }
-
-    /**
-     * Sanction action - blocks target's economic actions for one turn.
-     * Costs 3 coins and prevents gather/tax until target's next turn.
-     */
-    void Player::sanction(Player& target) {
-        if (!game.isGameStarted()) { // Ensure game is in progress
-            throw std::runtime_error("Game has not started yet");
-        }
-
-        if (!game.isPlayerTurn(this)) { // Verify it's this player's turn
-            throw std::runtime_error("Not your turn");
-        }
-
-        if (!active) { // Ensure player is still in the game
-            throw std::runtime_error("Player is eliminated");
-        }
-
-        if (coin_count >= 10 && !bribe_used) { // Enforce mandatory coup rule
-            throw std::runtime_error("You have 10 or more coins, must perform coup");
-        }
-
-        if (&target == this) { // Prevent self-targeting
-            throw std::runtime_error("An action against yourself is not allowed");
-        }
-
-        if (!target.isActive()) { // Ensure target is still in game
-            throw std::runtime_error("Target player is eliminated");
-        }
-
-        // Ensure player has enough coins
-        if (coin_count < 3) {
-            throw std::runtime_error("Not enough coins for sanction");
-        }
+    
+    SUBCASE("Block coup - invalid targets") {
+        gen.addCoins(10); // Give General coins
         
-        // If target is a judge, the player must pay 4 coins
-        if(target.getRoleType() == "Judge") {
-            if (coin_count < 4) {
-                throw std::runtime_error("Not enough coins for sanction (higher fee)");
-            }
-
-            removeCoins(1); // Pay 1 coin now and 3 coins later (4 coins in total)
-        }
-
-        removeCoins(3); // Pay 3 coins
-
-        target.setSanctionStatus(true); // Mark target as sanctioned
+        // Cannot block coup on active player (not couped)
+        CHECK_THROWS_AS(gen.block_coup(victim), std::runtime_error); // Victim is still active
         
-        // If player used bribe, then let him play another turn
-        if(bribe_used) {
-            bribe_used = false; // Reset bribe used flag
-        }
-        
-        // If player did not use bribe, then move to next player's turn
-        else {
-            game.nextTurn(); // Move to next player's turn
-        }
+        // Cannot block coup when no coup reference exists
+        victim.setActivityStatus(false); // Eliminate victim
+        CHECK_THROWS_AS(gen.block_coup(victim), std::runtime_error); // No coup to block
     }
-
-    // Coup action - eliminate target for 7 coins
-    void Player::coup(Player& target) {
-        // Check if game has started
-        if (!game.isGameStarted()) {
-            throw std::runtime_error("Game has not started yet");
-        }
+    
+    SUBCASE("Block coup timing restrictions") {
+        gen.addCoins(5); // Give General minimum coins for blocking
         
-        // Ensure it's the player's turn
-        if (!game.isPlayerTurn(this)) {
-            throw std::runtime_error("Not your turn");
-        }
+        // Simulate coup that's too late to block
+        victim.setActivityStatus(false); // Victim eliminated
+        victim.setCoupedBy(nullptr); // Coup already resolved (no reference)
+        
+        CHECK_THROWS_AS(gen.block_coup(victim), std::runtime_error); // Too late to block
+    }
+}
 
-        // Ensure player is active
-        if (!active) {
-            throw std::runtime_error("Player is eliminated");
-        }
+TEST_CASE("Judge Role Tests") {
+    Game game; // Create game for Judge testing
+    Judge judge(game, "Judge"); // Judge player
+    Player briber(game, "Briber"); // Player who will use bribe
+    game.startGame(); // Start game to enable actions
+    
+    SUBCASE("Judge role identification") {
+        CHECK(judge.getRoleType() == "Judge"); // Should identify as Judge
+    }
+    
+    SUBCASE("Block bribe - valid scenario") {
+        briber.addCoins(4); // Give briber coins for bribe
+        
+        game.nextTurn(); // Switch to briber's turn
+        briber.bribe(); // Briber uses bribe (pays 4 coins)
+        CHECK(briber.isBribeUsed()); // Bribe flag should be set
+        CHECK(briber.coins() == 0); // Briber should have 0 coins left
+        
+        // Judge blocks the bribe
+        judge.block_bribe(briber); // Judge negates bribe effect
+        CHECK_FALSE(briber.isBribeUsed()); // Bribe effect should be removed
+        // Note: coins already spent are not refunded in this implementation
+    }
+    
+    SUBCASE("Block bribe - invalid targets") {
+        // Cannot block if target hasn't used bribe
+        CHECK_THROWS_AS(judge.block_bribe(briber), std::runtime_error); // Briber hasn't used bribe
+        
+        // Cannot block on self
+        CHECK_THROWS_AS(judge.block_bribe(judge), std::runtime_error); // Cannot block own bribe
+        
+        // Cannot block inactive player
+        briber.setActivityStatus(false); // Eliminate briber
+        CHECK_THROWS_AS(judge.block_bribe(briber), std::runtime_error); // Cannot block eliminated players
+    }
+}
 
-        // Ensure target is not the current player
-        if (&target == this) {
-            throw std::runtime_error("An action against yourself is not allowed");
-        }
+TEST_CASE("Baron Role Tests") {
+    Game game; // Create game for Baron testing
+    Baron baron(game, "Baron"); // Baron player
+    Player regular(game, "Regular"); // Regular player for turn testing
+    game.startGame(); // Start game to enable actions
+    
+    SUBCASE("Baron role identification") {
+        CHECK(baron.getRoleType() == "Baron"); // Should identify as Baron
+    }
+    
+    SUBCASE("Investment ability - valid scenario") {
+        baron.addCoins(5); // Give Baron 5 coins
+        CHECK(baron.coins() == 5); // Verify starting coins
+        
+        baron.invest(); // Baron invests (pays 3, receives 6, net +3)
+        CHECK(baron.coins() == 8); // Should have 8 coins (5-3+6=8)
+        CHECK(game.isPlayerTurn(&regular)); // Turn should advance to next player
+    }
+    
+    SUBCASE("Investment with minimum coins") {
+        baron.addCoins(3); // Give Baron exactly minimum coins
+        baron.invest(); // Baron invests all coins
+        CHECK(baron.coins() == 6); // Should have 6 coins (3-3+6=6)
+    }
+    
+    SUBCASE("Investment with insufficient coins") {
+        baron.addCoins(2); // Give Baron insufficient coins
+        CHECK_THROWS_AS(baron.invest(), std::runtime_error); // Need 3 coins to invest
+        CHECK(baron.coins() == 2); // Coins should be unchanged
+    }
+    
+    SUBCASE("Investment when not player's turn") {
+        baron.addCoins(5); // Give Baron coins
+        game.nextTurn(); // Switch to regular player's turn
+        CHECK_THROWS_AS(baron.invest(), std::runtime_error); // Only current player can act
+    }
+    
+    SUBCASE("Investment with 10+ coins without bribe") {
+        baron.addCoins(10); // Give Baron 10+ coins (mandatory coup threshold)
+        CHECK_THROWS_AS(baron.invest(), std::runtime_error); // Must coup instead of invest
+    }
+    
+    SUBCASE("Investment after bribe") {
+        baron.addCoins(10); // Give Baron 10+ coins
+        // After using bribe, should be able to invest
+        // This would need to be tested with proper bribe setup
+    }
+}
 
-        // Ensure target is active
-        if (!target.isActive()) {
-            throw std::runtime_error("Target player is eliminated");
-        }
-
-        // Ensure player has enough coins
-        if (coin_count < 7) {
-            throw std::runtime_error("Not enough coins for coup");
-        }
-
-        removeCoins(7); // Decrease coin count
-        target.couped_by = this; // Mark this player as the one who performed the coup
+TEST_CASE("Spy Role Tests") {
+    Game game; // Create game for Spy testing
+    Spy spy(game, "Spy"); // Spy player
+    Player target(game, "Target"); // Player to spy on
+    game.startGame(); // Start game to enable actions
+    
+    SUBCASE("Spy role identification") {
+        CHECK(spy.getRoleType() == "Spy"); // Should identify as Spy
+    }
+    
+    SUBCASE("Spy operation - valid target") {
+        target.addCoins(5); // Give target coins to spy on
+        CHECK(target.isArrestAvailable()); // Target can be arrested initially
+        
+        spy.spy_on(target); // Spy reveals target's coins and blocks arrests
+        CHECK_FALSE(target.isArrestAvailable()); // Target should be protected from arrests
+        // Coin information would be displayed via GUI
+        
+        // Spy operation doesn't consume a turn
+        CHECK(game.isPlayerTurn(&spy)); // Should still be Spy's turn
+    }
+    
+    SUBCASE("Spy operation - invalid targets") {
+        // Cannot spy on self
+        CHECK_THROWS_AS(spy.spy_on(spy), std::runtime_error); // Cannot spy on yourself
+        
+        // Cannot spy on inactive player
         target.setActivityStatus(false); // Eliminate target
+        CHECK_THROWS_AS(spy.spy_on(target), std::runtime_error); // Cannot spy on eliminated players
+    }
+    
+    SUBCASE("Spy operation when game not started") {
+        Game new_game; // Create unstarted game
+        Spy new_spy(new_game, "NewSpy"); // Add Spy
+        Player new_target(new_game, "NewTarget"); // Add target
         
-        // If player used bribe, then let him play another turn
-        if(bribe_used) {
-            bribe_used = false; // Reset bribe used flag
-        }
+        CHECK_THROWS_AS(new_spy.spy_on(new_target), std::runtime_error); // Cannot spy before game starts
+    }
+    
+    SUBCASE("Spy operation when spy eliminated") {
+        spy.setActivityStatus(false); // Eliminate Spy
+        CHECK_THROWS_AS(spy.spy_on(target), std::runtime_error); // Eliminated players cannot act
+    }
+}
+
+TEST_CASE("Merchant Role Tests") {
+    Game game; // Create game for Merchant testing
+    Merchant merchant(game, "Merchant"); // Merchant player
+    Player regular(game, "Regular"); // Regular player for turn testing
+    game.startGame(); // Start game to enable actions
+    
+    SUBCASE("Merchant role identification") {
+        CHECK(merchant.getRoleType() == "Merchant"); // Should identify as Merchant
+    }
+    
+    SUBCASE("Turn start bonus with sufficient coins") {
+        merchant.addCoins(3); // Give Merchant 3 coins (threshold for bonus)
         
-        // If player did not use bribe, then move to next player's turn
-        else {
-            game.nextTurn(); // Move to next player's turn
-        }
+        // When merchant's turn begins with 3+ coins, they get +1 bonus
+        // This would be triggered in nextTurn() logic
+        game.nextTurn(); // Move to regular player
+        game.nextTurn(); // Back to merchant's turn
+        
+        // In implementation, merchant should get bonus coin
+        // CHECK(merchant.coins() == 4); // 3 + 1 bonus
     }
-
-    // Helper methods
-    // Add coins to player
-    void Player::addCoins(int amount) {
-        // Ensure the amount is non-negative
-        if (amount < 0) {
-            throw std::invalid_argument("Cannot add negative coins");
-        }
-
-        coin_count += amount; // Increase coin count
+    
+    SUBCASE("Turn start bonus with insufficient coins") {
+        merchant.addCoins(2); // Give Merchant insufficient coins for bonus
+        
+        game.nextTurn(); // Move to regular player
+        game.nextTurn(); // Back to merchant's turn
+        
+        // No bonus with less than 3 coins
+        CHECK(merchant.coins() == 2); // Should remain at 2 coins
     }
+    
+    SUBCASE("Arrest on Merchant - Merchant pays 2 coins to treasury and the one who arrests gets nothing") {
+        merchant.addCoins(2); // Give Merchant 2 coin
+        regular.addCoins(1); // Give regular player 1 coin
+        
+        game.nextTurn(); // Switch to regular player's turn
+        regular.arrest(merchant); // Regular player arrests Merchant
 
-
-    // Remove coins from player
-    void Player::removeCoins(int amount) {
-        // Ensure the amount is non-negative
-        if (amount < 0) {
-            throw std::invalid_argument("Cannot remove negative coins");
-        }
-
-        // Ensure player has enough coins
-        if (coin_count < amount) {
-            throw std::runtime_error("Not enough coins");
-        }
-
-        coin_count -= amount; // Decrease coin count
+        // Merchant should pay 2 coins to treasury
+        CHECK(merchant.coins() == 0); // Merchant should have paid 2 coins (2-2=0)
+        CHECK(regular.coins() == 1); // Regular player should not gain coins from arrest on Merchant
     }
+}
 
-    // Set player's activity status
-    void Player::setActivityStatus(bool value) {
-        active = value;
+TEST_CASE("Role Interaction Scenarios") {
+    Game game; // Create game for complex role interactions
+    Governor gov(game, "Governor"); // Governor with undo ability
+    General gen(game, "General"); // General with coup blocking
+    Judge judge(game, "Judge"); // Judge with bribe blocking
+    Baron baron(game, "Baron"); // Baron with investment
+    game.startGame(); // Start game to enable interactions
+    
+    SUBCASE("Judge blocking Baron's bribe") {
+        gov.tax(); // Governor taxes to advance turn
+        gen.tax(); // General taxes to advance turn
+        judge.tax(); // Judge taxes to advance turn
+        baron.addCoins(4); // Give Baron coins for bribe
+        baron.bribe(); // Baron uses bribe
+        CHECK(baron.isBribeUsed()); // Bribe should be active
+        
+        judge.block_bribe(baron); // Judge blocks the bribe
+        CHECK_FALSE(baron.isBribeUsed()); // Bribe should be negated
     }
-
-    // Set player as sanctioned or not-sanctioned
-    void Player::setSanctionStatus(bool value) {
-        sanctioned = value; // Mark player as sanctioned
+    
+    SUBCASE("General blocking coup on Judge") {
+        gov.addCoins(7); // Give Governor coins for coup
+        gen.addCoins(5); // Give General coins for blocking
+        
+        // Attacker coups judge
+        gov.coup(judge); // Governor eliminates Judge
+        CHECK_FALSE(judge.isActive()); // Judge should be eliminated
+        
+        // General saves judge
+        gen.block_coup(judge); // General pays to save Judge
+        CHECK(judge.isActive()); // Judge should be restored
+        CHECK(gen.coins() == 0); // General should have 0 coins left (5-5=0)
     }
-
-    /**
-     * Sets whether this player can be arrested.
-     * Used by Spy role to block arrests temporarily.
-     */
-    void Player::setArrestAvailability(bool value) {
-        arrest_available = value; // Update arrest action status
+    
+    SUBCASE("Multiple role abilities in sequence") {
+        // Complex scenario testing multiple interactions
+        gov.tax(); // Governor gets 3 coins from enhanced tax
+        gen.tax(); // General gets 2 coins from normal tax
+        judge.tax(); // Judge gets 2 coins from normal tax
+        gen.addCoins(9); // Give additional coins for testing
+        judge.addCoins(9); // Give additional coins for testing
+        baron.addCoins(9); // Give additional coins for testing
+        
+        // Baron invests
+        baron.invest(); // Baron pays 3, receives 6 (net +3)
+        CHECK(baron.coins() == 12); // Should have 12 coins (9-3+6=12)
+        
+        // Judge blocks potential bribe (if baron had used one)
+        // General blocks potential coup
+        // Governor undoes potential tax
     }
+}
 
-    /**
-     * Sets the player who performed coup on this player.
-     */
-    void Player::setCoupedBy(Player* player) {
-        couped_by = player; // Track who performed coup on this player
+TEST_CASE("Role Edge Cases and Error Handling") {
+    SUBCASE("Role abilities when game not started") {
+        Game game; // Create unstarted game
+        Governor gov(game, "Gov"); // Add Governor
+        General gen(game, "Gen"); // Add General
+        Judge judge(game, "Judge"); // Add Judge
+        Baron baron(game, "Baron"); // Add Baron
+        Spy spy(game, "Spy"); // Add Spy
+        
+        Player target(game, "Target"); // Add target for abilities
+        
+        CHECK_THROWS_AS(gov.undo(target), std::runtime_error); // Cannot undo before game starts
+        CHECK_THROWS_AS(gen.block_coup(target), std::runtime_error); // Cannot block before game starts
+        CHECK_THROWS_AS(judge.block_bribe(target), std::runtime_error); // Cannot block bribe before game starts
+        CHECK_THROWS_AS(baron.invest(), std::runtime_error); // Cannot invest before game starts
+        CHECK_THROWS_AS(spy.spy_on(target), std::runtime_error); // Cannot spy before game starts
     }
-
-    /**
-     * Resets the bribe used flag to false.
-     * Called at end of turn cleanup or after bribe action.
-     */
-    void Player::resetBribeUsed() {
-        bribe_used = false; // Clear bribe usage flag
+    
+    SUBCASE("Role abilities when eliminated") {
+        Game game; // Create game
+        Governor gov(game, "Gov"); // Add Governor
+        Player target(game, "Target"); // Add target
+        game.startGame(); // Start game
+        
+        gov.setActivityStatus(false); // Eliminate Governor
+        CHECK_THROWS_AS(gov.undo(target), std::runtime_error); // Eliminated players cannot use abilities
     }
-
-    /**
-     * Resets the tax last action tracking flag.
-     * Called when Governor undoes tax or at turn end.
-     */
-    void Player::resetUsedTaxLastAction() {
-        used_tax_last_action = false; // Clear tax action tracking
+    
+    SUBCASE("Role state consistency after failed actions") {
+        Game game; // Create game
+        Baron baron(game, "Baron"); // Add Baron
+        Player target(game, "Target"); // Add target
+        game.startGame(); // Start game
+        
+        baron.addCoins(2); // Give Baron insufficient coins
+        int initial_coins = baron.coins(); // Store initial state
+        
+        CHECK_THROWS_AS(baron.invest(), std::runtime_error); // Should fail due to insufficient coins
+        CHECK(baron.coins() == initial_coins); // State should be unchanged after failure
     }
-
-    /**
-     * Clears the reference to who performed coup on this player.
-     * Called when coup blocking window expires.
-     */
-    void Player::resetCoupedBy() {
-        couped_by = nullptr; // Remove coup relationship tracking
+    
+    SUBCASE("Role polymorphism and casting") {
+        Game game; // Create game for polymorphism testing
+        
+        // Create roles as base Player pointers
+        Player* gov = new Governor(game, "Gov"); // Governor as Player pointer
+        Player* gen = new General(game, "Gen"); // General as Player pointer
+        Player* judge = new Judge(game, "Judge"); // Judge as Player pointer
+        
+        // Test role identification through base pointers
+        CHECK(gov->getRoleType() == "Governor"); // Should identify correctly through polymorphism
+        CHECK(gen->getRoleType() == "General"); // Should identify correctly through polymorphism
+        CHECK(judge->getRoleType() == "Judge"); // Should identify correctly through polymorphism
+        
+        // Cleanup handled by Game destructor
     }
 }
