@@ -1,0 +1,10 @@
+# C/C++
+*.o
+*.out
+build/
+
+# OS/IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
