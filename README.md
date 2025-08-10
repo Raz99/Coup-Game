@@ -1,4 +1,6 @@
 # Coup Game
+![C++](https://img.shields.io/badge/C%2B%2B-17-blue)
+![SFML](https://img.shields.io/badge/SFML-2.5%2B-informational)
 
 A feature-rich, GUI-based implementation of the popular card game **Coup** built in C++ using the SFML graphics library. This project recreates the strategic bluffing and deduction game with original character roles, each having unique abilities that affect gameplay dynamics.
 
