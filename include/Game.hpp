@@ -191,5 +191,4 @@ namespace coup {
         Player* createPlayerWithRole(const std::string& name, RoleType role);
     };
 }
-
 #endif
